@@ -7,11 +7,24 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cirias/tgbot"
 	"github.com/pkg/errors"
 )
+
+var kRecordReg = regexp.MustCompile(`([^\d]{2,})(\d+(?:\.\d*)?)\s*$`)
+var kUsers = map[int64]string{
+	119838553: "Sirius",
+	500028413: "Jian",
+}
+var kAdminUserId int64 = 119838553
+var kChats = &sync.Map{}
+
+// China doesn't have daylight saving. It uses a fixed 8 hour offset from UTC.
+var kBeijing = time.FixedZone("Beijing Time", int((8 * time.Hour).Seconds()))
+var kTimeFormat = "2006-01-02 15:04:05"
 
 func serve(bot *tgbot.Bot, sheet *Sheet) error {
 	params := &tgbot.GetUpdatesParams{
@@ -32,17 +45,7 @@ func serve(bot *tgbot.Bot, sheet *Sheet) error {
 		}
 
 		for _, u := range updates {
-			go func() {
-				reply := handleUpdate(sheet, u)
-
-				if reply == "" {
-					return
-				}
-
-				if err := sendMessage(bot, u.Message.Chat.Id, reply); err != nil {
-					log.Println(err)
-				}
-			}()
+			go handleUpdate(bot, sheet, u)
 		}
 
 		if len(updates) > 0 {
@@ -51,28 +54,50 @@ func serve(bot *tgbot.Bot, sheet *Sheet) error {
 	}
 }
 
-func handleUpdate(sheet *Sheet, u *tgbot.Update) string {
+func handleUpdate(bot *tgbot.Bot, sheet *Sheet, u *tgbot.Update) {
+	kChats.LoadOrStore(u.Message.From.Id, u.Message.Chat.Id)
+
 	payment, err := parseMessage(u.Message)
 	if err != nil {
-		return err.Error()
+		handleUpdateError(bot, err, "could not parse message")
+		return
 	}
 
 	if err := sheet.Append(payment.Values()); err != nil {
-		return err.Error()
+		handleUpdateError(bot, err, "could not append to sheet")
+		return
 	}
 
-	return fmt.Sprintf("roger: %s", payment.String())
+	reply := fmt.Sprintf("roger: %s", payment)
+	go mustSendMessage(bot, u.Message.Chat.Id, reply)
+
+	notification := fmt.Sprintf("note: %s", payment)
+	for uid := range kUsers {
+		if uid == u.Message.From.Id {
+			continue
+		}
+
+		chatId, _ := kChats.Load(uid)
+		if chatId == nil {
+			continue
+		}
+
+		go mustSendMessage(bot, chatId.(int64), notification)
+	}
 }
 
-var kRecordReg = regexp.MustCompile(`([^\d]{2,})(\d+(?:\.\d*)?)\s*$`)
-var kUsers = map[int64]string{
-	119838553: "Sirius",
-	500028413: "Jian",
-}
+func handleUpdateError(bot *tgbot.Bot, err error, msg string) {
+	errContent := fmt.Sprintf("%s: %s", msg, err)
+	log.Println(errContent)
 
-// China doesn't have daylight saving. It uses a fixed 8 hour offset from UTC.
-var kBeijing = time.FixedZone("Beijing Time", int((8 * time.Hour).Seconds()))
-var kTimeFormat = "2006-01-02 15:04:05"
+	chatId, _ := kChats.Load(kAdminUserId)
+	if chatId == nil {
+		log.Printf("could not load chat id of admin user: %d\n", kAdminUserId)
+		return
+	}
+
+	go mustSendMessage(bot, chatId.(int64), errContent)
+}
 
 func parseMessage(m *tgbot.Message) (*Payment, error) {
 	user, ok := kUsers[m.From.Id]
@@ -120,6 +145,12 @@ func (p *Payment) Values() []interface{} {
 		p.user,
 		p.category,
 		p.timestamp.In(kBeijing).Format(kTimeFormat),
+	}
+}
+
+func mustSendMessage(bot *tgbot.Bot, chatId int64, text string) {
+	if err := sendMessage(bot, chatId, text); err != nil {
+		log.Println(err)
 	}
 }
 
