@@ -1,3 +1,4 @@
 bookkeeper
 credentials.json
 token.json
+docker-compose.yml
