@@ -12,6 +12,8 @@ var (
 	botToken            = flag.String("token", "", "telegram bot token")
 	credentialsFilepath = flag.String("credentials", "credentials.json", "filepath of google credentials")
 	spreadsheetId       = flag.String("sheet", "", "id of google sheet")
+	users               = flag.String("users", "", "name=id[,name=id] name,id pair of users")
+	admin               = flag.String("admin", "", "name of admin user")
 )
 
 func main() {
@@ -28,7 +30,13 @@ func main() {
 	}
 
 	bot := tgbot.NewBot(*botToken)
-	if err := serve(bot, sheet); err != nil {
+
+	s, err := NewServer(bot, sheet, *users, *admin)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	if err := s.serve(); err != nil {
 		log.Fatalln(err)
 	}
 }

@@ -15,18 +15,65 @@ import (
 )
 
 var kRecordReg = regexp.MustCompile(`([^\d]{2,})(\d+(?:\.\d*)?)\s*$`)
-var kUsers = map[int64]string{
-	119838553: "Sirius",
-	500028413: "Jian",
-}
-var kAdminUserId int64 = 119838553
-var kChats = &sync.Map{}
 
 // China doesn't have daylight saving. It uses a fixed 8 hour offset from UTC.
 var kBeijing = time.FixedZone("Beijing Time", int((8 * time.Hour).Seconds()))
 var kTimeFormat = "2006-01-02 15:04:05"
 
-func serve(bot *tgbot.Bot, sheet *Sheet) error {
+type Server struct {
+	bot   *tgbot.Bot
+	sheet *Sheet
+	users map[int64]string
+	admin int64
+	chats *sync.Map
+}
+
+func NewServer(bot *tgbot.Bot, sheet *Sheet, users, admin string) (s *Server, err error) {
+	s = &Server{
+		bot:   bot,
+		sheet: sheet,
+		chats: &sync.Map{},
+	}
+
+	s.users, err = parseUsers(users)
+	if err != nil {
+		return nil, err
+	}
+
+	for id, name := range s.users {
+		if admin == name {
+			s.admin = id
+		}
+	}
+	if s.admin == 0 {
+		return nil, errors.Errorf("could not found admin in users")
+	}
+
+	return s, nil
+}
+
+func parseUsers(users string) (map[int64]string, error) {
+	m := make(map[int64]string)
+
+	pairs := strings.Split(users, ",")
+	for _, pair := range pairs {
+		vs := strings.Split(pair, "=")
+		if len(vs) != 2 {
+			return nil, errors.Errorf("invalid user: %s", pair)
+		}
+
+		id, err := strconv.ParseInt(vs[1], 10, 64)
+		if err != nil {
+			return nil, errors.Errorf("invalid user: %s", pair)
+		}
+
+		m[id] = vs[0]
+	}
+
+	return m, nil
+}
+
+func (s *Server) serve() error {
 	params := &tgbot.GetUpdatesParams{
 		Offset:  0,
 		Limit:   10,
@@ -37,7 +84,7 @@ func serve(bot *tgbot.Bot, sheet *Sheet) error {
 		var updates []*tgbot.Update
 		err := willRetry(func() error {
 			var err error
-			updates, err = bot.GetUpdates(params)
+			updates, err = s.bot.GetUpdates(params)
 			return errors.Wrap(err, "could not get updates")
 		}, 4)
 		if err != nil {
@@ -45,7 +92,7 @@ func serve(bot *tgbot.Bot, sheet *Sheet) error {
 		}
 
 		for _, u := range updates {
-			go handleUpdate(bot, sheet, u)
+			go s.handleUpdate(u)
 		}
 
 		if len(updates) > 0 {
@@ -54,53 +101,53 @@ func serve(bot *tgbot.Bot, sheet *Sheet) error {
 	}
 }
 
-func handleUpdate(bot *tgbot.Bot, sheet *Sheet, u *tgbot.Update) {
-	kChats.LoadOrStore(u.Message.From.Id, u.Message.Chat.Id)
+func (s *Server) handleUpdate(u *tgbot.Update) {
+	s.chats.LoadOrStore(u.Message.From.Id, u.Message.Chat.Id)
 
-	payment, err := parseMessage(u.Message)
+	payment, err := s.parseMessage(u.Message)
 	if err != nil {
-		handleUpdateError(bot, err, "could not parse message")
+		s.handleUpdateError(err, "could not parse message")
 		return
 	}
 
-	if err := sheet.Append(payment.Values()); err != nil {
-		handleUpdateError(bot, err, "could not append to sheet")
+	if err := s.sheet.Append(payment.Values()); err != nil {
+		s.handleUpdateError(err, "could not append to sheet")
 		return
 	}
 
 	reply := fmt.Sprintf("roger: %s", payment)
-	go mustSendMessage(bot, u.Message.Chat.Id, reply)
+	go mustSendMessage(s.bot, u.Message.Chat.Id, reply)
 
 	notification := fmt.Sprintf("note: %s", payment)
-	for uid := range kUsers {
+	for uid := range s.users {
 		if uid == u.Message.From.Id {
 			continue
 		}
 
-		chatId, _ := kChats.Load(uid)
+		chatId, _ := s.chats.Load(uid)
 		if chatId == nil {
 			continue
 		}
 
-		go mustSendMessage(bot, chatId.(int64), notification)
+		go mustSendMessage(s.bot, chatId.(int64), notification)
 	}
 }
 
-func handleUpdateError(bot *tgbot.Bot, err error, msg string) {
+func (s *Server) handleUpdateError(err error, msg string) {
 	errContent := fmt.Sprintf("%s: %s", msg, err)
 	log.Println(errContent)
 
-	chatId, _ := kChats.Load(kAdminUserId)
+	chatId, _ := s.chats.Load(s.admin)
 	if chatId == nil {
-		log.Printf("could not load chat id of admin user: %d\n", kAdminUserId)
+		log.Printf("could not load chat id of admin user: %d\n", s.admin)
 		return
 	}
 
-	go mustSendMessage(bot, chatId.(int64), errContent)
+	go mustSendMessage(s.bot, chatId.(int64), errContent)
 }
 
-func parseMessage(m *tgbot.Message) (*Payment, error) {
-	user, ok := kUsers[m.From.Id]
+func (s *Server) parseMessage(m *tgbot.Message) (*Payment, error) {
+	user, ok := s.users[m.From.Id]
 	if !ok {
 		return nil, errors.Errorf("unknown user %d\n", m.From.Id)
 	}
