@@ -204,9 +204,8 @@ func mustSendMessage(bot *tgbot.Bot, chatId int64, text string) {
 func sendMessage(bot *tgbot.Bot, chatId int64, text string) error {
 	return willRetry(func() error {
 		_, err := bot.SendMessage(&tgbot.SendMessageParams{
-			ChatId:    chatId,
-			Text:      text,
-			ParseMode: "markdown",
+			ChatId: chatId,
+			Text:   text,
 		})
 		return errors.Wrap(err, "could not send message with tgbot")
 	}, 4)
