@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/pkg/errors"
 	"golang.org/x/net/context"
@@ -46,7 +47,23 @@ func getClient(config *oauth2.Config) *http.Client {
 		tok = getTokenFromWeb(config)
 		saveToken(tokFile, tok)
 	}
+	go autoRefreshTokenFile(config, tok, tokFile)
 	return config.Client(context.Background(), tok)
+}
+
+func autoRefreshTokenFile(config *oauth2.Config, token *oauth2.Token, tokFile string) {
+	for {
+		time.Sleep(time.Hour)
+		log.Println("refreshing token")
+		tokenSource := config.TokenSource(context.Background(), token)
+		t, err := tokenSource.Token()
+		if err != nil {
+			log.Println("could not refresh token:", err)
+			continue
+		}
+
+		saveToken(tokFile, t)
+	}
 }
 
 // Request a token from the web, then returns the retrieved token.
