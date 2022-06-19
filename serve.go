@@ -14,7 +14,8 @@ import (
 	"github.com/pkg/errors"
 )
 
-var kRecordReg = regexp.MustCompile(`([^\d]{2,})(\d+(?:\.\d*)?)\s*$`)
+// "tissue 12.34 category"
+var kRecordReg = regexp.MustCompile(`^\s*(\S+)\s+(\d+(?:\.\d*)?)(?:\s+(\S+))?\s*$`)
 
 // China doesn't have daylight saving. It uses a fixed 8 hour offset from UTC.
 var kBeijing = time.FixedZone("Beijing Time", int((8 * time.Hour).Seconds()))
@@ -153,15 +154,16 @@ func (s *Server) parseMessage(m *tgbot.Message) (*Payment, error) {
 	}
 
 	matches := kRecordReg.FindStringSubmatch(m.Text)
-	if len(matches) < 3 {
+	if len(matches) < 4 {
 		return nil, errors.Errorf("invalid message: %s", m.Text)
 	}
 
-	name := strings.Trim(matches[1], " ")
+	name := matches[1]
 	money, err := strconv.ParseFloat(matches[2], 64)
 	if err != nil {
 		return nil, errors.Errorf("could not convert %s to float", matches[2])
 	}
+	category := matches[3]
 
 	timestamp := time.Now()
 
@@ -169,6 +171,7 @@ func (s *Server) parseMessage(m *tgbot.Message) (*Payment, error) {
 		name:      name,
 		money:     money,
 		user:      user,
+		category:  category,
 		timestamp: timestamp,
 	}, nil
 }
@@ -182,7 +185,11 @@ type Payment struct {
 }
 
 func (p *Payment) String() string {
-	return fmt.Sprintf("%s spent %.2f on %s", p.user, p.money, p.name)
+	s := fmt.Sprintf("%s spent %.2f on %s", p.user, p.money, p.name)
+	if p.category == "" {
+		return s
+	}
+	return fmt.Sprintf("%s in %s", s, p.category)
 }
 
 func (p *Payment) Values() []interface{} {
